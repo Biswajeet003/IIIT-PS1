@@ -9,6 +9,7 @@ dependencies:
   flutter:
     sdk: flutter
   cupertino_icons: ^1.0.6
+  video_player: ^2.11.1
 
 dev_dependencies:
   flutter_test:
@@ -19,6 +20,8 @@ flutter:
   uses-material-design: true
   assets:
     - assets/images/
+    - assets/interface1.mp4
+    - assets/opening_screen_bg.png
 
 flutter_launcher_icons:
   android: "launcher_icon"

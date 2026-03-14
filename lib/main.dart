@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart'; 
 import 'dart:math';
 import 'dart:async';
 import 'package:video_player/video_player.dart';
@@ -6,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 import 'package:mappls_gl/mappls_gl.dart';
 import 'package:pedometer/pedometer.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:vibration/vibration.dart'; // DIRECT MOTOR CONTROL
 
 // ==========================================
 // 1. THE GAME ENGINE (REAL-TIME GPS LOGIC)
@@ -17,6 +19,7 @@ class GameEngine extends ChangeNotifier {
   Position? securityPosition;
   double distanceToMonster = 999.0; 
   int currentFearLevel = 0; 
+  Timer? _heartbeatTimer; 
 
   int demogorgonSteps = 0; 
   bool isHuntModeActive = false;
@@ -51,7 +54,7 @@ class GameEngine extends ChangeNotifier {
   int trapInRangeIndex = -1; 
 
   // ========================================
-  // NEW: REAL MULTIPLAYER LOBBY STATE
+  // REAL MULTIPLAYER LOBBY STATE
   // ========================================
   String currentRoomCode = "";
   List<String> lobbyPlayers = [];
@@ -60,7 +63,6 @@ class GameEngine extends ChangeNotifier {
   void hostGame() {
     const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
     Random rnd = Random();
-    // Generates a real random 4-character room code
     currentRoomCode = String.fromCharCodes(Iterable.generate(4, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
     lobbyPlayers = ["1. YOU (HOST)"];
     isHost = true;
@@ -70,7 +72,6 @@ class GameEngine extends ChangeNotifier {
   void joinGame(String code) {
     if (code.isNotEmpty) {
       currentRoomCode = code.toUpperCase();
-      // In the future, this will fetch the real player list from the backend
       lobbyPlayers = ["1. HOST", "2. YOU (READY)"]; 
       isHost = false;
       notifyListeners();
@@ -85,7 +86,7 @@ class GameEngine extends ChangeNotifier {
   }
 
   // ========================================
-  // GEOFENCE & MAP LOGIC
+  // GEOFENCE & TRAP LOGIC
   // ========================================
   void initializeArena(Position center) {
     if (arenaCenter != null) return; 
@@ -115,11 +116,15 @@ class GameEngine extends ChangeNotifier {
       if (!isOutOfBounds) {
         isOutOfBounds = true;
         outOfBoundsTimer = 60;
+        
+        // MOTOR CONTROL: Out of bounds warning
+        Vibration.vibrate(pattern: [0, 500, 200, 500]);
+        SystemSound.play(SystemSoundType.alert);
+
         deathTimer = Timer.periodic(const Duration(seconds: 1), (timer) {
           outOfBoundsTimer--;
           if (outOfBoundsTimer <= 0) {
-            isDead = true;
-            deathReason = "OUT OF BOUNDS";
+            _triggerDeath("OUT OF BOUNDS");
             timer.cancel();
           }
           notifyListeners();
@@ -136,7 +141,9 @@ class GameEngine extends ChangeNotifier {
   }
 
   void _checkTrapProximity(Position pos) {
+    int previousIndex = trapInRangeIndex;
     trapInRangeIndex = -1;
+    
     for (int i = 0; i < trapSpawnPoints.length; i++) {
       double d = Geolocator.distanceBetween(
           pos.latitude, pos.longitude, trapSpawnPoints[i].latitude, trapSpawnPoints[i].longitude);
@@ -145,6 +152,12 @@ class GameEngine extends ChangeNotifier {
         break;
       }
     }
+
+    // MOTOR CONTROL: Double pulse when near a trap
+    if (trapInRangeIndex != -1 && previousIndex == -1) {
+      Vibration.vibrate(pattern: [0, 150, 100, 150]);
+    }
+
     notifyListeners();
   }
 
@@ -154,6 +167,11 @@ class GameEngine extends ChangeNotifier {
       secureChatMessages.add("SYS: TRAP ACQUIRED");
       trapSpawnPoints.removeAt(trapInRangeIndex); 
       trapInRangeIndex = -1;
+      
+      // MOTOR CONTROL: Quick tap
+      Vibration.vibrate(duration: 50);
+      SystemSound.play(SystemSoundType.click);
+      
       notifyListeners();
     }
   }
@@ -168,6 +186,10 @@ class GameEngine extends ChangeNotifier {
       }
       
       secureChatMessages.add("SYS: TRAP DEPLOYED AT CURRENT GPS");
+      
+      // MOTOR CONTROL: Heavy thud
+      Vibration.vibrate(duration: 300);
+      
       notifyListeners();
     }
   }
@@ -209,6 +231,20 @@ class GameEngine extends ChangeNotifier {
     }
   }
 
+  void _triggerDeath(String reason) {
+    isDead = true;
+    deathReason = reason;
+    isHuntModeActive = false;
+    huntActiveTime = 0;
+    _heartbeatTimer?.cancel();
+    
+    // MOTOR CONTROL: Massive failure vibration
+    Vibration.vibrate(pattern: [0, 1000, 500, 1000]);
+    SystemSound.play(SystemSoundType.alert);
+    
+    notifyListeners();
+  }
+
   void _calculateDistanceAndFear() {
     if (demogorgonPosition != null && securityPosition != null) {
       distanceToMonster = Geolocator.distanceBetween(
@@ -217,6 +253,8 @@ class GameEngine extends ChangeNotifier {
         demogorgonPosition!.latitude,
         demogorgonPosition!.longitude,
       );
+
+      int previousFearLevel = currentFearLevel;
 
       if (distanceToMonster > 100) {
         currentFearLevel = 0; 
@@ -227,14 +265,26 @@ class GameEngine extends ChangeNotifier {
         currentFearLevel = currentFearLevel.clamp(0, 10);
       }
 
+      // MOTOR CONTROL: THE FEAR HEARTBEAT
+      if (currentFearLevel != previousFearLevel && !isDead) {
+        _heartbeatTimer?.cancel();
+        
+        if (currentFearLevel > 0) {
+          int pulseDelay = 1500 - (currentFearLevel * 120);
+          pulseDelay = pulseDelay.clamp(300, 1500);
+
+          _heartbeatTimer = Timer.periodic(Duration(milliseconds: pulseDelay), (timer) {
+            Vibration.vibrate(duration: 150); // Distinct heartbeat thump
+            if (currentFearLevel == 10) {
+              SystemSound.play(SystemSoundType.alert);
+            }
+          });
+        }
+      }
+
       if (isHuntModeActive && distanceToMonster <= 2.0 && !isDead) {
-        isDead = true;
-        deathReason = "CAUGHT BY DEMOGORGON";
-        
-        isHuntModeActive = false;
-        huntActiveTime = 0;
+        _triggerDeath("CAUGHT BY DEMOGORGON");
         _startHuntCooldown();
-        
         sendChatMessage("SYS: AGENT ELIMINATED");
       }
 
@@ -253,13 +303,22 @@ class GameEngine extends ChangeNotifier {
 
   void sendChatMessage(String message) {
     secureChatMessages.add("AGENT: $message");
+    Vibration.vibrate(duration: 50); 
     notifyListeners();
   }
 
+  // ========================================
+  // TIME-BASED COOLDOWN LOGIC 
+  // ========================================
   void activateHuntMode() {
     if (huntActiveTime == 0 && huntCooldownTime == 0 && !isRecoveryPhase) {
       isHuntModeActive = true;
       huntActiveTime = 10; 
+      
+      // MOTOR CONTROL: Aggressive alert
+      Vibration.vibrate(duration: 600);
+      SystemSound.play(SystemSoundType.alert);
+      
       notifyListeners();
 
       Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -289,6 +348,8 @@ class GameEngine extends ChangeNotifier {
         huntCooldownTime--;
         notifyListeners();
       } else {
+        Vibration.vibrate(duration: 200); // Ready Alert
+        SystemSound.play(SystemSoundType.click);
         timer.cancel();
       }
     });
@@ -299,6 +360,10 @@ class GameEngine extends ChangeNotifier {
       isSabotageActiveState = true;
       isSabotageActive = true;
       sabotageActiveTime = 10; 
+
+      // MOTOR CONTROL: Glitchy stutter effect
+      Vibration.vibrate(pattern: [0, 100, 50, 100, 50, 300]);
+
       notifyListeners();
 
       Timer.periodic(const Duration(seconds: 1), (timer) {
@@ -326,6 +391,8 @@ class GameEngine extends ChangeNotifier {
         sabotageCooldownTime--;
         notifyListeners();
       } else {
+        Vibration.vibrate(duration: 200); // Ready Alert
+        SystemSound.play(SystemSoundType.click);
         timer.cancel();
       }
     });
@@ -337,6 +404,10 @@ class GameEngine extends ChangeNotifier {
     isSabotageActive = false;
     huntActiveTime = 0;
     sabotageActiveTime = 0;
+    
+    Vibration.vibrate(pattern: [0, 600, 200, 600]);
+    SystemSound.play(SystemSoundType.alert);
+
     notifyListeners();
 
     Timer(const Duration(seconds: 30), () {
@@ -498,7 +569,10 @@ class NeonButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return GestureDetector(
-      onTap: onPressed,
+      onTap: () {
+        Vibration.vibrate(duration: 30); // Tactical click for all UI buttons
+        onPressed();
+      },
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
         decoration: BoxDecoration(
@@ -558,7 +632,10 @@ class ThemedActionButton extends StatelessWidget {
     }
 
     return GestureDetector(
-      onTap: isReady ? onTap : null,
+      onTap: isReady ? () {
+        Vibration.vibrate(duration: 40);
+        onTap();
+      } : null,
       child: SizedBox(
         width: 80,
         height: 80,
@@ -1131,7 +1208,6 @@ class ArchPainter extends CustomPainter {
 // SCREENS
 // ==========================================
 
-// 1. OPENING SCREEN
 class OpeningScreen extends StatelessWidget {
   const OpeningScreen({super.key});
 
@@ -1188,7 +1264,6 @@ class OpeningScreen extends StatelessWidget {
   }
 }
 
-// 1.5 ONLINE MATCHMAKING SCREEN (REAL PLAYER LOGIC)
 class OnlineMatchmakingScreen extends StatefulWidget {
   const OnlineMatchmakingScreen({super.key});
 
@@ -1228,6 +1303,7 @@ class _OnlineMatchmakingScreenState extends State<OnlineMatchmakingScreen> {
         _isSearching = true;
         _foundPlayers.add("1. YOU (HOST)");
       });
+      Vibration.vibrate(duration: 50); // Initial scan ping
     }
   }
 
@@ -1312,6 +1388,7 @@ class _OnlineMatchmakingScreenState extends State<OnlineMatchmakingScreen> {
                         color: Colors.greenAccent,
                         isFilled: true,
                         onPressed: () {
+                          Vibration.vibrate(pattern: [0, 500, 200, 500]); // Match start heavy vibration
                           final bool isDemogorgon = Random().nextBool(); 
                           Navigator.pushReplacement(
                             context, 
@@ -1331,7 +1408,6 @@ class _OnlineMatchmakingScreenState extends State<OnlineMatchmakingScreen> {
   }
 }
 
-// 2. LOBBY SCREEN (PLAY WITH FRIENDS - REAL MULTIPLAYER STATE)
 class LobbyScreen extends StatefulWidget {
   const LobbyScreen({super.key});
 
@@ -1346,7 +1422,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   @override
   void initState() {
     super.initState();
-    gameEngine.clearLobby(); // Ensure lobby is empty when entering
+    gameEngine.clearLobby(); 
     _videoController = VideoPlayerController.asset('assets/interface1.mp4')
       ..initialize().then((_) {
         _videoController.setLooping(true);
@@ -1363,6 +1439,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   }
 
   void _startMatch() {
+    Vibration.vibrate(pattern: [0, 500, 200, 500]); // HAPTIC: Match start
     final bool isDemogorgon = Random().nextBool(); 
     Navigator.pushReplacement(
       context, 
@@ -1404,7 +1481,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
                 builder: (context, child) {
                   return Column(
                     children: [
-                      // CONTROLS ONLY SHOW IF NOT IN A ROOM
                       if (gameEngine.currentRoomCode.isEmpty)
                         Column(
                           children: [
@@ -1448,6 +1524,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
                                   ),
                                   GestureDetector(
                                     onTap: () {
+                                      Vibration.vibrate(duration: 30);
                                       gameEngine.joinGame(_codeController.text);
                                     },
                                     child: const Text("JOIN", style: TextStyle(fontSize: 18, color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
@@ -1458,7 +1535,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
                           ],
                         )
                       else
-                        // SHOW ROOM CODE ONCE GENERATED OR JOINED
                         Container(
                           padding: const EdgeInsets.all(15),
                           decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), border: Border.all(color: Colors.redAccent)),
@@ -1498,7 +1574,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
                       ),
                       const SizedBox(height: 20),
                       
-                      // START BUTTON IS ONLY AVAILABLE TO THE HOST
                       if (gameEngine.isHost)
                         SizedBox(
                           width: double.infinity,
@@ -1526,7 +1601,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
   }
 }
 
-// 3. ROLE REVEAL SCREEN 
 class RoleRevealScreen extends StatefulWidget {
   final bool isDemogorgon;
   const RoleRevealScreen({super.key, required this.isDemogorgon});
@@ -1575,6 +1649,7 @@ class _RoleRevealScreenState extends State<RoleRevealScreen> with SingleTickerPr
           _statusText = widget.isDemogorgon ? "STATUS: ACTIVE // HUNT" : "STATUS: ACTIVE // DEFEND";
           _statusColor = widget.isDemogorgon ? Colors.redAccent : Colors.blueAccent;
         });
+        Vibration.vibrate(duration: 400); // Heavy pulse on role reveal
       }
     });
 
@@ -1692,7 +1767,6 @@ class _RoleRevealScreenState extends State<RoleRevealScreen> with SingleTickerPr
   }
 }
 
-// 4. SECURITY VIEW 
 class SecurityScreen extends StatefulWidget {
   const SecurityScreen({super.key});
 
@@ -1852,6 +1926,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
             child: ElevatedButton(
               style: ElevatedButton.styleFrom(backgroundColor: Colors.blueAccent.withOpacity(0.5)),
               onPressed: () {
+                Vibration.vibrate(duration: 30);
                 gameEngine.spawnGhostPlayerForTesting(false);
               },
               child: const Text("DEV TEST: SPAWN MOCK DEMOGORGON", style: TextStyle(fontSize: 8, color: Colors.white)),
@@ -1864,6 +1939,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
               right: 20,
               child: GestureDetector(
                 onTap: () {
+                  Vibration.vibrate(duration: 30);
                   setState(() {
                     _isChatOpen = true;
                   });
@@ -1905,6 +1981,7 @@ class _SecurityScreenState extends State<SecurityScreen> {
                         const Text("SECURE COMMS", style: TextStyle(color: Colors.blueAccent, fontSize: 10, fontFamily: 'Courier', fontWeight: FontWeight.bold)),
                         GestureDetector(
                           onTap: () {
+                            Vibration.vibrate(duration: 30);
                             setState(() {
                               _isChatOpen = false;
                             });
@@ -2029,7 +2106,6 @@ class _SecurityScreenState extends State<SecurityScreen> {
   }
 }
 
-// 5. DEMOGORGON VIEW 
 class DemogorgonScreen extends StatelessWidget {
   const DemogorgonScreen({super.key});
 
@@ -2132,6 +2208,7 @@ class DemogorgonScreen extends StatelessWidget {
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.redAccent.withOpacity(0.5)),
                       onPressed: () {
+                        Vibration.vibrate(duration: 30);
                         gameEngine.spawnGhostPlayerForTesting(true);
                       },
                       child: const Text("DEV TEST: SPAWN MOCK AGENT (15M AWAY)", style: TextStyle(fontSize: 8, color: Colors.white)),
@@ -2140,6 +2217,7 @@ class DemogorgonScreen extends StatelessWidget {
                     ElevatedButton(
                       style: ElevatedButton.styleFrom(backgroundColor: Colors.grey.withOpacity(0.5)),
                       onPressed: () {
+                        Vibration.vibrate(duration: 30);
                         gameEngine.triggerRecoveryPhase();
                       },
                       child: const Text("DEV TEST: HIT TRAP", style: TextStyle(fontSize: 8, color: Colors.white)),

@@ -50,6 +50,43 @@ class GameEngine extends ChangeNotifier {
   List<LatLng> activeTraps = []; 
   int trapInRangeIndex = -1; 
 
+  // ========================================
+  // NEW: REAL MULTIPLAYER LOBBY STATE
+  // ========================================
+  String currentRoomCode = "";
+  List<String> lobbyPlayers = [];
+  bool isHost = false;
+
+  void hostGame() {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+    Random rnd = Random();
+    // Generates a real random 4-character room code
+    currentRoomCode = String.fromCharCodes(Iterable.generate(4, (_) => chars.codeUnitAt(rnd.nextInt(chars.length))));
+    lobbyPlayers = ["1. YOU (HOST)"];
+    isHost = true;
+    notifyListeners();
+  }
+
+  void joinGame(String code) {
+    if (code.isNotEmpty) {
+      currentRoomCode = code.toUpperCase();
+      // In the future, this will fetch the real player list from the backend
+      lobbyPlayers = ["1. HOST", "2. YOU (READY)"]; 
+      isHost = false;
+      notifyListeners();
+    }
+  }
+
+  void clearLobby() {
+    currentRoomCode = "";
+    lobbyPlayers = [];
+    isHost = false;
+    notifyListeners();
+  }
+
+  // ========================================
+  // GEOFENCE & MAP LOGIC
+  // ========================================
   void initializeArena(Position center) {
     if (arenaCenter != null) return; 
     arenaCenter = center;
@@ -1151,7 +1188,7 @@ class OpeningScreen extends StatelessWidget {
   }
 }
 
-// 1.5 ONLINE MATCHMAKING SCREEN (RAPIDO STYLE)
+// 1.5 ONLINE MATCHMAKING SCREEN (REAL PLAYER LOGIC)
 class OnlineMatchmakingScreen extends StatefulWidget {
   const OnlineMatchmakingScreen({super.key});
 
@@ -1161,7 +1198,7 @@ class OnlineMatchmakingScreen extends StatefulWidget {
 
 class _OnlineMatchmakingScreenState extends State<OnlineMatchmakingScreen> {
   String _status = "CALIBRATING GPS...";
-  List<String> _foundPlayers = [];
+  final List<String> _foundPlayers = [];
   bool _isSearching = false;
 
   @override
@@ -1187,38 +1224,10 @@ class _OnlineMatchmakingScreenState extends State<OnlineMatchmakingScreen> {
 
     if (mounted) {
       setState(() {
-        _status = "SCANNING 200M RADIUS FOR AGENTS...";
+        _status = "SCANNING 200M RADIUS FOR REAL PLAYERS...";
         _isSearching = true;
         _foundPlayers.add("1. YOU (HOST)");
       });
-    }
-
-    // SIMULATE REALISTIC USERNAMES POPULATING THE LOBBY OVER TIME
-    await Future.delayed(const Duration(seconds: 3));
-    if (mounted) setState(() => _foundPlayers.add("2. Rohan_M (45m away)"));
-    
-    await Future.delayed(const Duration(seconds: 3));
-    if (mounted) setState(() => _foundPlayers.add("3. Priya_2001 (112m away)"));
-
-    await Future.delayed(const Duration(seconds: 2));
-    if (mounted) setState(() => _foundPlayers.add("4. Kabir_Gaming (180m away)"));
-
-    await Future.delayed(const Duration(seconds: 2));
-    if (mounted) {
-      setState(() {
-        _foundPlayers.add("5. Aman_Dev (20m away)");
-        _status = "LOBBY FULL // ESTABLISHING NEURAL LINK";
-        _isSearching = false;
-      });
-    }
-
-    await Future.delayed(const Duration(seconds: 2));
-    if (mounted) {
-      final bool isDemogorgon = Random().nextBool(); 
-      Navigator.pushReplacement(
-        context, 
-        MaterialPageRoute(builder: (_) => RoleRevealScreen(isDemogorgon: isDemogorgon))
-      );
     }
   }
 
@@ -1251,7 +1260,8 @@ class _OnlineMatchmakingScreenState extends State<OnlineMatchmakingScreen> {
                   const SizedBox(height: 10),
                   
                   if (_isSearching)
-                    const Text("Awaiting 5 players to start...", style: TextStyle(color: Colors.white54, fontSize: 12, fontFamily: 'Courier')),
+                    Text("Awaiting 5 players to start... (${_foundPlayers.length}/5)", 
+                      style: const TextStyle(color: Colors.white54, fontSize: 12, fontFamily: 'Courier')),
                   
                   const SizedBox(height: 40),
 
@@ -1286,13 +1296,30 @@ class _OnlineMatchmakingScreenState extends State<OnlineMatchmakingScreen> {
                   
                   const SizedBox(height: 50),
                   
-                  NeonButton(
-                    text: "CANCEL MATCHMAKING",
-                    color: Colors.redAccent,
-                    isFilled: false,
-                    onPressed: () {
-                      Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const OpeningScreen()));
-                    },
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                    children: [
+                      NeonButton(
+                        text: "CANCEL",
+                        color: Colors.redAccent,
+                        isFilled: false,
+                        onPressed: () {
+                          Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const OpeningScreen()));
+                        },
+                      ),
+                      NeonButton(
+                        text: "DEV: FORCE START",
+                        color: Colors.greenAccent,
+                        isFilled: true,
+                        onPressed: () {
+                          final bool isDemogorgon = Random().nextBool(); 
+                          Navigator.pushReplacement(
+                            context, 
+                            MaterialPageRoute(builder: (_) => RoleRevealScreen(isDemogorgon: isDemogorgon))
+                          );
+                        },
+                      )
+                    ],
                   )
                 ],
               ),
@@ -1304,7 +1331,7 @@ class _OnlineMatchmakingScreenState extends State<OnlineMatchmakingScreen> {
   }
 }
 
-// 2. LOBBY SCREEN (PLAY WITH FRIENDS)
+// 2. LOBBY SCREEN (PLAY WITH FRIENDS - REAL MULTIPLAYER STATE)
 class LobbyScreen extends StatefulWidget {
   const LobbyScreen({super.key});
 
@@ -1314,10 +1341,12 @@ class LobbyScreen extends StatefulWidget {
 
 class _LobbyScreenState extends State<LobbyScreen> {
   late VideoPlayerController _videoController;
+  final TextEditingController _codeController = TextEditingController();
 
   @override
   void initState() {
     super.initState();
+    gameEngine.clearLobby(); // Ensure lobby is empty when entering
     _videoController = VideoPlayerController.asset('assets/interface1.mp4')
       ..initialize().then((_) {
         _videoController.setLooping(true);
@@ -1329,6 +1358,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   @override
   void dispose() {
     _videoController.dispose();
+    _codeController.dispose();
     super.dispose();
   }
 
@@ -1365,62 +1395,128 @@ class _LobbyScreenState extends State<LobbyScreen> {
             )
           else
             const Center(child: CircularProgressIndicator(color: Colors.redAccent)),
-          Container(color: Colors.black.withOpacity(0.5)),
+          Container(color: Colors.black.withOpacity(0.6)),
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(20.0),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              child: AnimatedBuilder(
+                animation: gameEngine,
+                builder: (context, child) {
+                  return Column(
                     children: [
-                      Expanded(child: NeonButton(text: "CREATE GAME", color: Colors.redAccent, onPressed: () {})),
-                      const SizedBox(width: 10),
-                      Expanded(child: NeonButton(text: "JOIN GAME", color: Colors.grey, onPressed: () {})),
-                    ],
-                  ),
-                  const SizedBox(height: 20),
-                  Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(border: Border.all(color: Colors.white54), color: Colors.black45),
-                    child: const Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Text("ENTER CODE: _ _", style: TextStyle(fontSize: 18, color: Colors.white)),
-                        SizedBox(width: 20),
-                        Text("JOIN", style: TextStyle(fontSize: 18, color: Colors.grey)),
-                      ],
-                    ),
-                  ),
-                  const SizedBox(height: 30),
-                  Expanded(
-                    child: Container(
-                      decoration: BoxDecoration(border: Border.all(color: Colors.white54), color: Colors.black45),
-                      child: ListView(
-                        padding: const EdgeInsets.all(16),
-                        children: const [
-                          Text("LOBBY", textAlign: TextAlign.center, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
-                          Divider(color: Colors.grey),
-                          ListTile(title: Text("1. YOU"), trailing: Text("HOST", style: TextStyle(color: Colors.greenAccent))),
-                          ListTile(title: Text("2. PLAYER 2"), trailing: Text("READY", style: TextStyle(color: Colors.greenAccent))),
-                          ListTile(title: Text("3. PLAYER 3"), trailing: Text("READY", style: TextStyle(color: Colors.greenAccent))),
-                          ListTile(title: Text("4. PLAYER 4"), trailing: Text("READY", style: TextStyle(color: Colors.greenAccent))),
-                          ListTile(title: Text("5. PLAYER 5"), trailing: Text("READY", style: TextStyle(color: Colors.greenAccent))),
-                        ],
+                      // CONTROLS ONLY SHOW IF NOT IN A ROOM
+                      if (gameEngine.currentRoomCode.isEmpty)
+                        Column(
+                          children: [
+                            Row(
+                              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                              children: [
+                                Expanded(
+                                  child: NeonButton(
+                                    text: "CREATE GAME", 
+                                    color: Colors.redAccent, 
+                                    onPressed: () {
+                                      gameEngine.hostGame();
+                                    }
+                                  )
+                                ),
+                              ],
+                            ),
+                            const SizedBox(height: 20),
+                            Container(
+                              padding: const EdgeInsets.all(10),
+                              decoration: BoxDecoration(border: Border.all(color: Colors.white54), color: Colors.black45),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.center,
+                                children: [
+                                  const Text("ENTER CODE: ", style: TextStyle(fontSize: 16, color: Colors.white)),
+                                  SizedBox(
+                                    width: 80,
+                                    child: TextField(
+                                      controller: _codeController,
+                                      maxLength: 4,
+                                      textCapitalization: TextCapitalization.characters,
+                                      style: const TextStyle(color: Colors.cyanAccent, fontWeight: FontWeight.bold, letterSpacing: 5),
+                                      decoration: const InputDecoration(
+                                        counterText: "",
+                                        isDense: true,
+                                        border: InputBorder.none,
+                                        hintText: "____",
+                                        hintStyle: TextStyle(color: Colors.white30)
+                                      ),
+                                    ),
+                                  ),
+                                  GestureDetector(
+                                    onTap: () {
+                                      gameEngine.joinGame(_codeController.text);
+                                    },
+                                    child: const Text("JOIN", style: TextStyle(fontSize: 18, color: Colors.cyanAccent, fontWeight: FontWeight.bold)),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        )
+                      else
+                        // SHOW ROOM CODE ONCE GENERATED OR JOINED
+                        Container(
+                          padding: const EdgeInsets.all(15),
+                          decoration: BoxDecoration(color: Colors.redAccent.withOpacity(0.2), border: Border.all(color: Colors.redAccent)),
+                          child: Text("ROOM CODE: ${gameEngine.currentRoomCode}", style: const TextStyle(color: Colors.white, fontSize: 24, fontWeight: FontWeight.bold, letterSpacing: 4)),
+                        ),
+                      
+                      const SizedBox(height: 30),
+                      
+                      Expanded(
+                        child: Container(
+                          decoration: BoxDecoration(border: Border.all(color: Colors.white54), color: Colors.black45),
+                          child: Column(
+                            children: [
+                              const Padding(
+                                padding: EdgeInsets.all(16.0),
+                                child: Text("LOBBY", textAlign: TextAlign.center, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold)),
+                              ),
+                              const Divider(color: Colors.grey),
+                              Expanded(
+                                child: gameEngine.lobbyPlayers.isEmpty
+                                  ? const Center(child: Text("Waiting for connection...", style: TextStyle(color: Colors.white54, fontFamily: 'Courier')))
+                                  : ListView.builder(
+                                      padding: const EdgeInsets.all(16),
+                                      itemCount: gameEngine.lobbyPlayers.length,
+                                      itemBuilder: (context, index) {
+                                        return ListTile(
+                                          leading: const Icon(Icons.person_outline, color: Colors.greenAccent),
+                                          title: Text(gameEngine.lobbyPlayers[index]),
+                                          trailing: const Text("CONNECTED", style: TextStyle(color: Colors.greenAccent, fontSize: 10, fontFamily: 'Courier')),
+                                        );
+                                      },
+                                    ),
+                              ),
+                            ],
+                          ),
+                        ),
                       ),
-                    ),
-                  ),
-                  const SizedBox(height: 20),
-                  SizedBox(
-                    width: double.infinity,
-                    child: NeonButton(
-                      text: "START MATCH",
-                      color: Colors.redAccent,
-                      isFilled: true,
-                      onPressed: _startMatch,
-                    ),
-                  ),
-                ],
+                      const SizedBox(height: 20),
+                      
+                      // START BUTTON IS ONLY AVAILABLE TO THE HOST
+                      if (gameEngine.isHost)
+                        SizedBox(
+                          width: double.infinity,
+                          child: NeonButton(
+                            text: "START MATCH",
+                            color: Colors.redAccent,
+                            isFilled: true,
+                            onPressed: _startMatch,
+                          ),
+                        )
+                      else if (gameEngine.currentRoomCode.isNotEmpty)
+                        const Padding(
+                          padding: EdgeInsets.all(16.0),
+                          child: Text("WAITING FOR HOST TO START...", style: TextStyle(color: Colors.yellowAccent, fontFamily: 'Courier')),
+                        )
+                    ],
+                  );
+                }
               ),
             ),
           ),

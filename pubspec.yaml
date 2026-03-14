@@ -10,6 +10,11 @@ dependencies:
     sdk: flutter
   cupertino_icons: ^1.0.6
   video_player: ^2.11.1
+      # MapmyIndia Maps SDK
+  geolocator: ^11.0.0 
+  mappls_gl: 1.2.1 
+  pedometer: ^4.2.0             # Hardware step tracking
+  permission_handler: ^11.3.1   # Required to ask for sensor permissions
 
 dev_dependencies:
   flutter_test:
@@ -22,7 +27,14 @@ flutter:
     - assets/images/
     - assets/interface1.mp4
     - assets/opening_screen_bg.png
-
+    - assets/card_back.jpeg # The spooky Upside Down themed image
+    - assets/Demogorgan.png # The creature reveal
+    - assets/Hawkins lab security.png # The security reveal
+    
+  fonts:
+    - family: Benguiat
+      fonts:
+        - asset: assets/fonts/benguiat.otf
 flutter_launcher_icons:
   android: "launcher_icon"
   ios: true

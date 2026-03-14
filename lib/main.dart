@@ -2,8 +2,20 @@ import 'package:flutter/material.dart';
 import 'dart:math';
 import 'dart:async';
 import 'package:video_player/video_player.dart';
+import 'package:geolocator/geolocator.dart';
+import 'package:mappls_gl/mappls_gl.dart';
+import 'package:pedometer/pedometer.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 void main() {
+  WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize MapmyIndia (Mappls) API Key
+  MapplsAccountManager.setMapSDKKey('61cb0cffdca67fce832bcc83259aaad7');
+  MapplsAccountManager.setRestAPIKey('61cb0cffdca67fce832bcc83259aaad7');
+  MapplsAccountManager.setAtlasClientId('96dHZVzsAutaTno2lUch1XMHlBmuZKDim-9F0mKAaOynucoJEdWoqyOdRa5bQRqvxwT4i01btKKei45SoSZ4_PhxBLRTq785'); 
+  MapplsAccountManager.setAtlasClientSecret('lrFxI-iSEg9JWugB3ipnaxJBFtfAXsNsg-XiolwskiuM5eykqhfe6DVQ-UIpSVHu4TH6OSWvuG4_Up-Am2RH4w_ILfmmznWHLnDVwFMWgHc=');
+
   runApp(const DemogorgonGameApp());
 }
 
@@ -18,7 +30,7 @@ class DemogorgonGameApp extends StatelessWidget {
       theme: ThemeData(
         brightness: Brightness.dark,
         scaffoldBackgroundColor: const Color(0xFF0A0A0A),
-        fontFamily: 'Courier', 
+        fontFamily: 'Benguiat', 
       ),
       home: const OpeningScreen(),
     );
@@ -133,14 +145,12 @@ class RadarPainter extends CustomPainter {
       ..style = PaintingStyle.stroke
       ..strokeWidth = 1;
 
-    // Draw Grid & Circles
     canvas.drawCircle(center, radius * 0.33, paint);
     canvas.drawCircle(center, radius * 0.66, paint);
     canvas.drawCircle(center, radius, paint);
     canvas.drawLine(Offset(0, center.dy), Offset(size.width, center.dy), paint);
     canvas.drawLine(Offset(center.dx, 0), Offset(center.dx, size.height), paint);
 
-    // Draw Sweep
     final sweepPaint = Paint()
       ..shader = SweepGradient(
         colors: [Colors.transparent, color.withOpacity(0.6)],
@@ -157,7 +167,191 @@ class RadarPainter extends CustomPainter {
 }
 
 // ==========================================
-// FEAR METER COMPONENT (SCALED TO 50%)
+// HIGH PRECISION MAP & SENSOR EXTRACTION WIDGET
+// ==========================================
+class LiveGameMap extends StatefulWidget {
+  const LiveGameMap({super.key});
+
+  @override
+  State<LiveGameMap> createState() => _LiveGameMapState();
+}
+
+class _LiveGameMapState extends State<LiveGameMap> {
+  // GPS State
+  Position? _currentPosition;
+  StreamSubscription<Position>? _positionStream;
+  String _locationStatus = "ACQUIRING SENSORS...";
+
+  // Pedometer State
+  String _pedestrianStatus = 'UNKNOWN';
+  int _initialSteps = -1; // To calculate steps taken this session
+  int _currentSessionSteps = 0;
+  late StreamSubscription<StepCount> _stepCountStream;
+  late StreamSubscription<PedestrianStatus> _pedestrianStatusStream;
+
+  @override
+  void initState() {
+    super.initState();
+    _initAllSensors();
+  }
+
+  Future<void> _initAllSensors() async {
+    // 1. Request Physical Activity Permissions (for Pedometer)
+    if (await Permission.activityRecognition.request().isGranted) {
+      _initPedometer();
+    } else {
+      if (mounted) setState(() => _locationStatus = "PHYSICAL SENSOR PERMISSION DENIED");
+    }
+
+    // 2. Initialize Ultra-High Precision GPS Stream
+    _startPreciseLocationStream();
+  }
+
+  void _initPedometer() {
+    _pedestrianStatusStream = Pedometer.pedestrianStatusStream.listen((status) {
+      if (mounted) setState(() => _pedestrianStatus = status.status.toUpperCase());
+    });
+
+    _stepCountStream = Pedometer.stepCountStream.listen((event) {
+      if (mounted) {
+        setState(() {
+          if (_initialSteps == -1) {
+            _initialSteps = event.steps; // Capture baseline steps at game start
+          }
+          _currentSessionSteps = event.steps - _initialSteps;
+        });
+      }
+    });
+  }
+
+  Future<void> _startPreciseLocationStream() async {
+    bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      if (mounted) setState(() => _locationStatus = "ERROR: GPS SERVICES DISABLED");
+      return;
+    }
+
+    LocationPermission permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        if (mounted) setState(() => _locationStatus = "ERROR: LOCATION PERMISSION DENIED");
+        return;
+      }
+    }
+    
+    if (permission == LocationPermission.deniedForever) {
+      if (mounted) setState(() => _locationStatus = "ERROR: PERMISSIONS PERMANENTLY DENIED");
+      return;
+    } 
+
+    if (mounted) setState(() => _locationStatus = "CALIBRATING HIGH PRECISION (< 1m)...");
+    
+    // CONSTANT STREAM FOR MILITARY PRECISION (distanceFilter: 0 updates on every micro-movement)
+    LocationSettings locationSettings = const LocationSettings(
+      accuracy: LocationAccuracy.bestForNavigation, 
+      distanceFilter: 0, 
+    );
+
+    _positionStream = Geolocator.getPositionStream(locationSettings: locationSettings)
+      .listen((Position position) {
+        if (mounted) {
+          setState(() {
+            _currentPosition = position;
+          });
+        }
+      });
+  }
+
+  @override
+  void dispose() {
+    _positionStream?.cancel();
+    _stepCountStream.cancel();
+    _pedestrianStatusStream.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_currentPosition == null) {
+      return Container(
+        color: Colors.black,
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const CircularProgressIndicator(color: Colors.redAccent),
+              const SizedBox(height: 16),
+              Text(
+                _locationStatus,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.redAccent, fontFamily: 'Benguiat', fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Stack(
+      children: [
+        // THE MAP LAYER
+        MapplsMap(
+          initialCameraPosition: CameraPosition(
+            target: LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
+            zoom: 18.0, 
+          ),
+          myLocationEnabled: true,
+          compassEnabled: false,
+        ),
+
+        // HARDWARE SENSOR HUD OVERLAY
+        Positioned(
+          top: 100, // Lowered to avoid overlapping top UI elements
+          left: 10,
+          child: Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.black87,
+              border: Border.all(color: const Color(0xFF333333), width: 2),
+              boxShadow: [BoxShadow(color: Colors.black.withOpacity(0.5), blurRadius: 10)],
+            ),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text("SYS // SENSOR TELEMETRY", style: TextStyle(color: Colors.white54, fontSize: 8, fontFamily: 'Courier')),
+                const SizedBox(height: 4),
+                Row(
+                  children: [
+                    Text("GPS ACCURACY: ", style: const TextStyle(color: Colors.white70, fontSize: 10, fontFamily: 'Courier')),
+                    Text("${_currentPosition!.accuracy.toStringAsFixed(1)}m", 
+                      style: TextStyle(color: _currentPosition!.accuracy < 5 ? Colors.greenAccent : Colors.redAccent, fontSize: 10, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Text("PLAYER STATE: ", style: const TextStyle(color: Colors.white70, fontSize: 10, fontFamily: 'Courier')),
+                    Text(_pedestrianStatus, 
+                      style: TextStyle(color: _pedestrianStatus == 'WALKING' ? Colors.greenAccent : Colors.yellowAccent, fontSize: 10, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+                  ],
+                ),
+                Row(
+                  children: [
+                    Text("MOVES DETECTED: ", style: const TextStyle(color: Colors.white70, fontSize: 10, fontFamily: 'Courier')),
+                    Text("$_currentSessionSteps", style: const TextStyle(color: Colors.white, fontSize: 10, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ==========================================
+// FEAR METER COMPONENT 
 // ==========================================
 
 class FearMeter extends StatefulWidget {
@@ -187,7 +381,6 @@ class _FearMeterState extends State<FearMeter> with SingleTickerProviderStateMix
     super.dispose();
   }
 
-  // Heights halved from [18, 26, 34, 40, 44, 44, 40, 34, 26, 18]
   final List<double> segmentHeights = [9, 13, 17, 20, 22, 22, 20, 17, 13, 9];
 
   Widget _buildSegment(int index) {
@@ -203,9 +396,9 @@ class _FearMeterState extends State<FearMeter> with SingleTickerProviderStateMix
     }
 
     return Container(
-      width: 6, // Halved from 12
+      width: 6, 
       height: segmentHeights[index],
-      margin: const EdgeInsets.symmetric(horizontal: 1), // Halved from 2
+      margin: const EdgeInsets.symmetric(horizontal: 1), 
       decoration: BoxDecoration(
         color: isActive ? baseColor : const Color(0xFF333333).withOpacity(0.3),
         border: Border.all(color: Colors.white.withOpacity(0.1), width: 0.5),
@@ -217,15 +410,15 @@ class _FearMeterState extends State<FearMeter> with SingleTickerProviderStateMix
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 130, // Halved from 260
-      padding: const EdgeInsets.all(8), // Halved from 16
+      width: 130, 
+      padding: const EdgeInsets.all(8), 
       decoration: BoxDecoration(
         gradient: const LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [Color(0xFF121212), Color(0xFF1A1A1A)],
         ),
-        border: Border.all(color: const Color(0xFF444444), width: 1.5), // Halved from 3
+        border: Border.all(color: const Color(0xFF444444), width: 1.5), 
         boxShadow: [
           const BoxShadow(color: Colors.black, blurRadius: 5, offset: Offset(0, 0)), 
           BoxShadow(color: Colors.black.withOpacity(0.7), blurRadius: 7.5, offset: const Offset(0, 2.5)),
@@ -236,7 +429,7 @@ class _FearMeterState extends State<FearMeter> with SingleTickerProviderStateMix
         children: [
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.only(bottom: 4), // Halved from 8
+            padding: const EdgeInsets.only(bottom: 4), 
             decoration: const BoxDecoration(
               border: Border(bottom: BorderSide(color: Colors.white24)),
             ),
@@ -244,25 +437,24 @@ class _FearMeterState extends State<FearMeter> with SingleTickerProviderStateMix
               "FEAR METER",
               textAlign: TextAlign.center,
               style: TextStyle(
-                fontFamily: 'Courier',
-                fontSize: 10, // Halved from 20
+                fontSize: 10, 
                 fontWeight: FontWeight.bold,
-                letterSpacing: 1, // Halved from 2
+                letterSpacing: 1, 
                 color: Colors.white,
                 shadows: [Shadow(color: Colors.black, blurRadius: 1, offset: Offset(0.5, 0.5))],
               ),
             ),
           ),
-          const SizedBox(height: 8), // Halved from 16
+          const SizedBox(height: 8), 
           SizedBox(
-            width: 110, // Halved from 220
-            height: 40, // Halved from 80
+            width: 110, 
+            height: 40, 
             child: Stack(
               children: [
                 Align(
                   alignment: Alignment.bottomCenter,
                   child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisAlignment: MainAxisAlignment.center, 
                     crossAxisAlignment: CrossAxisAlignment.end,
                     children: List.generate(10, (index) => _buildSegment(index)),
                   ),
@@ -275,31 +467,31 @@ class _FearMeterState extends State<FearMeter> with SingleTickerProviderStateMix
               ],
             ),
           ),
-          const SizedBox(height: 4), // Halved from 8
+          const SizedBox(height: 4), 
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               const Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text("STATUS", style: TextStyle(color: Colors.white70, fontSize: 6, fontFamily: 'Courier')),
-                  Text("LOW", style: TextStyle(color: Colors.greenAccent, fontSize: 8, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+                  Text("STATUS", style: TextStyle(color: Colors.white70, fontSize: 6)),
+                  Text("LOW", style: TextStyle(color: Colors.greenAccent, fontSize: 8, fontWeight: FontWeight.bold)),
                 ],
               ),
-              Container(width: 0.5, height: 12, color: Colors.white24), // Halved from 24
+              Container(width: 0.5, height: 12, color: Colors.white24), 
               const Column(
                 crossAxisAlignment: CrossAxisAlignment.end,
                 children: [
-                  Text("THRESHOLD", style: TextStyle(color: Colors.white70, fontSize: 6, fontFamily: 'Courier')),
-                  Text("HIGH", style: TextStyle(color: Colors.grey, fontSize: 8, fontWeight: FontWeight.bold, fontFamily: 'Courier')),
+                  Text("THRESHOLD", style: TextStyle(color: Colors.white70, fontSize: 6)),
+                  Text("HIGH", style: TextStyle(color: Colors.grey, fontSize: 8, fontWeight: FontWeight.bold)),
                 ],
               ),
             ],
           ),
-          const SizedBox(height: 8), // Halved from 16
+          const SizedBox(height: 8), 
           Container(
             width: double.infinity,
-            padding: const EdgeInsets.symmetric(vertical: 3), // Halved from 6
+            padding: const EdgeInsets.symmetric(vertical: 3), 
             decoration: BoxDecoration(
               color: Colors.black45,
               border: Border.all(color: Colors.white12),
@@ -309,7 +501,7 @@ class _FearMeterState extends State<FearMeter> with SingleTickerProviderStateMix
               children: [
                 const Text(
                   "SIGNAL: ",
-                  style: TextStyle(color: Colors.white60, fontSize: 8, fontFamily: 'Courier'),
+                  style: TextStyle(color: Colors.white60, fontSize: 8),
                 ),
                 AnimatedBuilder(
                   animation: _pulseController,
@@ -322,7 +514,6 @@ class _FearMeterState extends State<FearMeter> with SingleTickerProviderStateMix
                           color: widget.currentFearLevel > 7 ? Colors.redAccent : Colors.greenAccent, 
                           fontSize: 8, 
                           fontWeight: FontWeight.bold, 
-                          fontFamily: 'Courier'
                         ),
                       ),
                     );
@@ -343,10 +534,9 @@ class ArchPainter extends CustomPainter {
     final paint = Paint()
       ..color = Colors.white.withOpacity(0.4)
       ..style = PaintingStyle.stroke
-      ..strokeWidth = 1; // Halved from 2
+      ..strokeWidth = 1; 
 
     final path = Path();
-    // Path coordinates halved to match the new 110x40 scale
     path.moveTo(5, 35);
     path.quadraticBezierTo(size.width / 2, -5, size.width - 5, 35);
     
@@ -361,7 +551,7 @@ class ArchPainter extends CustomPainter {
 // SCREENS
 // ==========================================
 
-// 1. OPENING SCREEN (Image + Radar + Text)
+// 1. OPENING SCREEN
 class OpeningScreen extends StatelessWidget {
   const OpeningScreen({super.key});
 
@@ -372,18 +562,13 @@ class OpeningScreen extends StatelessWidget {
         fit: StackFit.expand,
         alignment: Alignment.center,
         children: [
-          // 1. Bottom Layer: Static Background Image
           Image.asset(
             'assets/opening_screen_bg.png',
             fit: BoxFit.cover,
             color: Colors.black.withOpacity(0.3),
             colorBlendMode: BlendMode.darken,
           ),
-          
-          // 2. Middle Layer: Green Radar Sweep
           const RadarView(radarColor: Colors.greenAccent),
-          
-          // 3. Top Layer: Text & Buttons
           Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -397,24 +582,29 @@ class OpeningScreen extends StatelessWidget {
                   shadows: [Shadow(color: Colors.black, blurRadius: 10)]
                 ),
               ),
-              const SizedBox(height: 250), 
+              const SizedBox(height: 200), 
               NeonButton(
-                text: "START GAME",
+                text: "START ONLINE",
+                color: Colors.grey, 
+                isFilled: false,
+                onPressed: () {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text("Online Matchmaking Server Offline. Try 'Play with Friends'.", style: TextStyle(fontFamily: 'Benguiat')),
+                      backgroundColor: Colors.redAccent,
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 20),
+              NeonButton(
+                text: "PLAY WITH FRIENDS",
                 color: Colors.redAccent,
                 isFilled: true,
                 onPressed: () {
                   Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const LobbyScreen()));
                 },
-              ),
-              const SizedBox(height: 20),
-              const Text(
-                "3... 2... 1...",
-                style: TextStyle(
-                  color: Colors.redAccent, 
-                  fontSize: 24, 
-                  fontWeight: FontWeight.bold,
-                   shadows: [Shadow(color: Colors.black, blurRadius: 10)]
-                ),
               ),
             ],
           )
@@ -424,7 +614,7 @@ class OpeningScreen extends StatelessWidget {
   }
 }
 
-// 2. LOBBY SCREEN (Video Player)
+// 2. LOBBY SCREEN 
 class LobbyScreen extends StatefulWidget {
   const LobbyScreen({super.key});
 
@@ -442,7 +632,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
       ..initialize().then((_) {
         _videoController.setLooping(true);
         _videoController.play();
-        setState(() {}); // Trigger rebuild once video is loaded
+        setState(() {}); 
       });
   }
 
@@ -474,7 +664,6 @@ class _LobbyScreenState extends State<LobbyScreen> {
       body: Stack(
         fit: StackFit.expand,
         children: [
-          // 1. Bottom Layer: Video Player
           if (_videoController.value.isInitialized)
             FittedBox(
               fit: BoxFit.cover,
@@ -486,11 +675,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
             )
           else
             const Center(child: CircularProgressIndicator(color: Colors.redAccent)),
-
-          // 2. Middle Layer: Dark Overlay for Readability
           Container(color: Colors.black.withOpacity(0.5)),
-
-          // 3. Top Layer: Lobby UI
           SafeArea(
             child: Padding(
               padding: const EdgeInsets.all(20.0),
@@ -555,7 +740,7 @@ class _LobbyScreenState extends State<LobbyScreen> {
   }
 }
 
-// 3. ROLE REVEAL SCREEN
+// 3. ROLE REVEAL SCREEN 
 class RoleRevealScreen extends StatefulWidget {
   final bool isDemogorgon;
   const RoleRevealScreen({super.key, required this.isDemogorgon});
@@ -564,50 +749,164 @@ class RoleRevealScreen extends StatefulWidget {
   State<RoleRevealScreen> createState() => _RoleRevealScreenState();
 }
 
-class _RoleRevealScreenState extends State<RoleRevealScreen> {
+class _RoleRevealScreenState extends State<RoleRevealScreen> with SingleTickerProviderStateMixin {
+  late AnimationController _controller;
+  late Animation<Offset> _slideAnimation;
+  late Animation<double> _flipAnimation;
+  
+  bool _showFront = false; 
+  String _statusText = "ESTABLISHING NEURAL LINK...";
+  Color _statusColor = Colors.grey;
+
   @override
   void initState() {
     super.initState();
-    Timer(const Duration(seconds: 3), () {
-      if (widget.isDemogorgon) {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const DemogorgonScreen()));
-      } else {
-        Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const SecurityScreen()));
+    _controller = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 2500), 
+    );
+
+    _slideAnimation = Tween<Offset>(
+      begin: const Offset(0, 2), 
+      end: Offset.zero,          
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.0, 0.4, curve: Curves.easeOutBack),
+    ));
+
+    _flipAnimation = Tween<double>(
+      begin: 0,
+      end: pi, 
+    ).animate(CurvedAnimation(
+      parent: _controller,
+      curve: const Interval(0.5, 0.9, curve: Curves.easeInOut),
+    ));
+
+    _flipAnimation.addListener(() {
+      if (_flipAnimation.value >= pi / 2 && !_showFront) {
+        setState(() {
+          _showFront = true;
+          _statusText = widget.isDemogorgon ? "STATUS: ACTIVE // HUNT" : "STATUS: ACTIVE // DEFEND";
+          _statusColor = widget.isDemogorgon ? Colors.redAccent : Colors.blueAccent;
+        });
+      }
+    });
+
+    _controller.forward();
+
+    Timer(const Duration(milliseconds: 4500), () {
+      if (mounted) {
+        if (widget.isDemogorgon) {
+          Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const DemogorgonScreen()));
+        } else {
+          Navigator.pushReplacement(context, MaterialPageRoute(builder: (_) => const SecurityScreen()));
+        }
       }
     });
   }
 
   @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final String cardBackAsset = 'assets/card_back.jpeg'; 
+    final String cardFrontAsset = widget.isDemogorgon 
+        ? 'assets/Demogorgan.png' 
+        : 'assets/Hawkins lab security.png';
+
     return Scaffold(
       backgroundColor: Colors.black,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Text(
-              widget.isDemogorgon ? "YOU ARE THE DEMOGORGON" : "HAWKINS LAB SECURITY",
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                color: widget.isDemogorgon ? Colors.redAccent : Colors.blueAccent,
-                fontSize: 28,
-                fontWeight: FontWeight.bold,
+      body: Stack(
+        fit: StackFit.expand,
+        children: [
+          Opacity(
+            opacity: 0.2,
+            child: Image.asset('assets/opening_screen_bg.png', fit: BoxFit.cover),
+          ),
+          
+          Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              SlideTransition(
+                position: _slideAnimation,
+                child: Column(
+                  children: [
+                    const Text(
+                      "HAWKINS NATIONAL LABORATORY // PROJECT O.S.",
+                      style: TextStyle(color: Colors.white24, fontSize: 10, letterSpacing: 1),
+                    ),
+                    const SizedBox(height: 20),
+                    
+                    AnimatedBuilder(
+                      animation: _flipAnimation,
+                      builder: (context, child) {
+                        final Matrix4 transform = Matrix4.identity()
+                          ..setEntry(3, 2, 0.001) 
+                          ..rotateY(_flipAnimation.value);
+
+                        return Transform(
+                          transform: transform,
+                          alignment: Alignment.center,
+                          child: child,
+                        );
+                      },
+                      child: Container(
+                        width: 250, 
+                        height: 350,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF1A1A1A),
+                          border: Border.all(color: _showFront ? _statusColor : Colors.white24, width: 3),
+                          boxShadow: [
+                            BoxShadow(color: _showFront ? _statusColor.withOpacity(0.5) : Colors.black54, blurRadius: 20, spreadRadius: 5)
+                          ],
+                        ),
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(2),
+                          child: _showFront 
+                            ? Transform(
+                                alignment: Alignment.center,
+                                transform: Matrix4.rotationY(pi), 
+                                child: Image.asset(
+                                  cardFrontAsset,
+                                  fit: BoxFit.cover,
+                                ),
+                              )
+                            : Image.asset(
+                                cardBackAsset,
+                                fit: BoxFit.cover,
+                              ),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 40),
+                    
+                    AnimatedDefaultTextStyle(
+                      duration: const Duration(milliseconds: 300),
+                      style: TextStyle(
+                        color: _statusColor,
+                        fontSize: 18,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 2,
+                        shadows: _showFront ? [Shadow(color: _statusColor, blurRadius: 10)] : null,
+                      ),
+                      child: Text(_statusText),
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(height: 20),
-            Text(
-              widget.isDemogorgon ? "► HUNT & KILL\n► SABOTAGE RADAR" : "► PLACE TRAPS\n► SURVIVE & CAPTURE",
-              textAlign: TextAlign.center,
-              style: const TextStyle(color: Colors.white70, fontSize: 18),
-            ),
-          ],
-        ),
+            ],
+          ),
+        ],
       ),
     );
   }
 }
 
-// 4. SECURITY VIEW
+// 4. SECURITY VIEW 
 class SecurityScreen extends StatefulWidget {
   const SecurityScreen({super.key});
 
@@ -648,19 +947,19 @@ class _SecurityScreenState extends State<SecurityScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
+        fit: StackFit.expand,
         children: [
-          const RadarView(radarColor: Colors.greenAccent),
-          const Center(
-            child: Text(
-              "HAWKINS LAB",
-              style: TextStyle(
-                color: Colors.white54,
-                fontSize: 16,
-                fontWeight: FontWeight.bold,
-                backgroundColor: Colors.black45,
-              ),
-            ),
+          // 1. BOTTOM LAYER: The Live High-Precision MapmyIndia Map
+          const LiveGameMap(),
+
+          // 2. DIMMING LAYER: To maintain the spooky, dark UI vibe
+          Container(
+            color: Colors.black.withOpacity(0.5),
           ),
+
+          // 3. RADAR LAYER: Sweeping over the real-world map
+          const RadarView(radarColor: Colors.greenAccent),
+          
           if (_simulatedFearLevel > 7)
             Positioned(
               top: 60,
@@ -707,25 +1006,23 @@ class DemogorgonScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Stack(
+        fit: StackFit.expand,
         children: [
+          // 1. BOTTOM LAYER: The Live High-Precision MapmyIndia Map
+          const LiveGameMap(),
+
+          // 2. DIMMING LAYER: To maintain the spooky, dark UI vibe
+          Container(
+            color: Colors.black.withOpacity(0.5),
+          ),
+
+          // 3. RADAR LAYER: Sweeping over the real-world map
           const RadarView(radarColor: Colors.redAccent),
+
           Positioned(
             top: 60,
             right: 20,
             child: NeonButton(text: "SABOTAGE", color: Colors.grey, onPressed: () {}),
-          ),
-          Center(
-            child: Container(
-              decoration: BoxDecoration(
-                color: Colors.black87,
-                border: Border.all(color: Colors.white54)
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
-              child: const Text(
-                "GO TO RECOVERY POINT!",
-                style: TextStyle(color: Colors.white, fontSize: 18, fontWeight: FontWeight.bold),
-              ),
-            ),
           ),
           Positioned(
             bottom: 40,
